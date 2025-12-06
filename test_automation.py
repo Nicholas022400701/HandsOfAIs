@@ -10,10 +10,11 @@ import requests
 import json
 import time
 import sys
+import os
 
-# Configuration
-SERVER_URL = "http://127.0.0.1:5005"
-API_KEY = "E8b2a1a2e9b1f0c1d1a9E8FF7aka55riotr0knlMMNF6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+# Configuration - use environment variable or fallback to default
+SERVER_URL = os.getenv("AGENT_SERVER_URL", "http://127.0.0.1:5005")
+API_KEY = os.getenv("AGENT_API_KEY", "E8b2a1a2e9b1f0c1d1a9E8FF7aka55riotr0knlMMNF6a7b8c9d0e1f2a3b4c5d6e7f8a9b0")
 
 def send_command(command, args, thought="Test command"):
     """Send a command to the AgentServer"""

@@ -16,6 +16,7 @@ import base64
 import urllib.parse
 import platform
 import shlex
+import io
 from typing import Dict, Any, Callable, List, IO, Optional, Tuple
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -808,7 +809,6 @@ class Toolbelt:
             
             # Return base64 encoded image
             if return_base64:
-                import io
                 buffer = io.BytesIO()
                 screenshot.save(buffer, format='PNG')
                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -1085,8 +1085,20 @@ class Toolbelt:
                 if current_depth > max_depth:
                     return None
                 
+                # Check visibility - try multiple methods
+                is_visible = True
+                try:
+                    # Check if element is off-screen (width/height <= 0)
+                    if element.BoundingRectangle.width() <= 0 or element.BoundingRectangle.height() <= 0:
+                        is_visible = False
+                    # Check if element is enabled (often correlates with visibility)
+                    if not element.IsEnabled:
+                        is_visible = False
+                except:
+                    pass
+                
                 # Skip invisible elements if requested
-                if not include_invisible and not element.IsEnabled:
+                if not include_invisible and not is_visible:
                     return None
                 
                 info = {
@@ -1094,6 +1106,7 @@ class Toolbelt:
                     "name": element.Name,
                     "class": element.ClassName,
                     "enabled": element.IsEnabled,
+                    "visible": is_visible,
                     "bounds": {
                         "x": element.BoundingRectangle.left,
                         "y": element.BoundingRectangle.top,
