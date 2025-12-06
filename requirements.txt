@@ -14,3 +14,9 @@ pyautogui>=0.9.54
 Pillow>=10.3.0
 pygetwindow>=0.0.9
 pyperclip>=1.8.2
+
+# Windows UI Automation (token-efficient screen info, no screenshots)
+uiautomation>=2.0.18
+
+# OCR support (optional, for text extraction)
+pytesseract>=0.3.10

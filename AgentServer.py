@@ -56,6 +56,21 @@ except ImportError:
     pyperclip = None
     logging.warning("pyperclip not found. Install with: pip install pyperclip")
 
+# Windows UI Automation (for getting screen info without screenshots)
+try:
+    import uiautomation as auto
+except ImportError:
+    auto = None
+    logging.warning("uiautomation not found. Install with: pip install uiautomation")
+
+# OCR for text extraction from screen
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:
+    pytesseract = None
+    logging.warning("pytesseract not found. Install with: pip install pytesseract")
+
 # SSH Library Import (Keeping SSH as it might be useful, but not required for WSL)
 try:
     import paramiko
@@ -516,6 +531,9 @@ class Toolbelt:
             "simulate_mouse": self.simulate_mouse,
             "get_windows": self.get_windows,
             "clipboard_operations": self.clipboard_operations,
+            # Screen information without screenshots (token-efficient)
+            "get_screen_info": self.get_screen_info,
+            "find_ui_element": self.find_ui_element,
         }
 
     def _validate_timeout(self, timeout: Optional[int]) -> int:
@@ -1010,6 +1028,333 @@ class Toolbelt:
         except Exception as e:
             log.error(f"Clipboard operation error: {traceback.format_exc()}")
             return {"status": "error", "message": f"Clipboard operation failed: {e}"}
+
+    # --- Screen Information Tools (Token-Efficient, No Screenshots) ---
+
+    def get_screen_info(self, window_title: Optional[str] = None, max_depth: int = 3, 
+                       include_invisible: bool = False) -> Dict[str, Any]:
+        """
+        Gets structured information about screen elements using UI Automation.
+        This is much more token-efficient than screenshots and provides lossless information.
+        
+        Args:
+            window_title: Optional window title to focus on (partial match). If None, uses active window.
+            max_depth: Maximum depth to traverse the UI tree (default: 3)
+            include_invisible: Whether to include invisible elements (default: False)
+        
+        Returns:
+            Dict with status and structured UI information (element tree, text content, controls)
+        """
+        if auto is None:
+            return {"status": "error", "message": "UI Automation not available. Install with: pip install uiautomation"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            # Get target window
+            if window_title:
+                # Find window by title
+                window = auto.WindowControl(searchDepth=1, SubName=window_title)
+                if not window.Exists(0, 0):
+                    return {"status": "error", "message": f"Window with title '{window_title}' not found"}
+            else:
+                # Get active window
+                window = auto.GetForegroundControl()
+                if not window:
+                    return {"status": "error", "message": "No active window found"}
+            
+            # Extract window information
+            window_info = {
+                "title": window.Name,
+                "class_name": window.ClassName,
+                "control_type": window.ControlTypeName,
+                "bounds": {
+                    "left": window.BoundingRectangle.left,
+                    "top": window.BoundingRectangle.top,
+                    "right": window.BoundingRectangle.right,
+                    "bottom": window.BoundingRectangle.bottom,
+                    "width": window.BoundingRectangle.width(),
+                    "height": window.BoundingRectangle.height()
+                }
+            }
+            
+            # Extract UI tree structure
+            def extract_element_info(element, current_depth=0):
+                """Recursively extract element information"""
+                if current_depth > max_depth:
+                    return None
+                
+                # Skip invisible elements if requested
+                if not include_invisible and not element.IsEnabled:
+                    return None
+                
+                info = {
+                    "type": element.ControlTypeName,
+                    "name": element.Name,
+                    "class": element.ClassName,
+                    "enabled": element.IsEnabled,
+                    "bounds": {
+                        "x": element.BoundingRectangle.left,
+                        "y": element.BoundingRectangle.top,
+                        "width": element.BoundingRectangle.width(),
+                        "height": element.BoundingRectangle.height()
+                    }
+                }
+                
+                # Add automation ID if available
+                if hasattr(element, 'AutomationId') and element.AutomationId:
+                    info["automation_id"] = element.AutomationId
+                
+                # Add value for input controls
+                if hasattr(element, 'GetValuePattern'):
+                    try:
+                        value_pattern = element.GetValuePattern()
+                        if value_pattern:
+                            info["value"] = value_pattern.Value
+                    except:
+                        pass
+                
+                # Add text for text controls
+                if hasattr(element, 'GetTextPattern'):
+                    try:
+                        text_pattern = element.GetTextPattern()
+                        if text_pattern:
+                            info["text"] = text_pattern.DocumentRange.GetText(-1)
+                    except:
+                        pass
+                
+                # Get children
+                children = []
+                try:
+                    for child in element.GetChildren():
+                        child_info = extract_element_info(child, current_depth + 1)
+                        if child_info:
+                            children.append(child_info)
+                except:
+                    pass
+                
+                if children:
+                    info["children"] = children
+                
+                return info
+            
+            # Extract UI tree
+            ui_tree = extract_element_info(window, 0)
+            
+            # Extract all visible text from the window
+            all_text = []
+            def collect_text(element):
+                """Recursively collect all text from elements"""
+                try:
+                    if element.Name and element.Name.strip():
+                        all_text.append(element.Name)
+                    
+                    # Try to get text content
+                    if hasattr(element, 'GetTextPattern'):
+                        try:
+                            text_pattern = element.GetTextPattern()
+                            if text_pattern:
+                                text_content = text_pattern.DocumentRange.GetText(-1)
+                                if text_content and text_content.strip():
+                                    all_text.append(text_content)
+                        except:
+                            pass
+                    
+                    for child in element.GetChildren():
+                        collect_text(child)
+                except:
+                    pass
+            
+            collect_text(window)
+            
+            # Extract clickable elements (buttons, links, menu items)
+            clickable_elements = []
+            def find_clickable(element, path=""):
+                """Find all clickable elements"""
+                try:
+                    element_type = element.ControlTypeName
+                    if element_type in ["ButtonControl", "HyperlinkControl", "MenuItemControl", 
+                                       "TabItemControl", "ListItemControl"]:
+                        clickable_elements.append({
+                            "type": element_type,
+                            "name": element.Name,
+                            "path": path,
+                            "bounds": {
+                                "x": element.BoundingRectangle.left,
+                                "y": element.BoundingRectangle.top,
+                                "width": element.BoundingRectangle.width(),
+                                "height": element.BoundingRectangle.height()
+                            },
+                            "enabled": element.IsEnabled
+                        })
+                    
+                    for i, child in enumerate(element.GetChildren()):
+                        find_clickable(child, f"{path}/{element.ControlTypeName}[{i}]")
+                except:
+                    pass
+            
+            find_clickable(window)
+            
+            # Extract input fields
+            input_fields = []
+            def find_inputs(element):
+                """Find all input fields"""
+                try:
+                    element_type = element.ControlTypeName
+                    if element_type in ["EditControl", "TextControl", "ComboBoxControl"]:
+                        field_info = {
+                            "type": element_type,
+                            "name": element.Name,
+                            "class": element.ClassName,
+                            "bounds": {
+                                "x": element.BoundingRectangle.left,
+                                "y": element.BoundingRectangle.top
+                            },
+                            "enabled": element.IsEnabled
+                        }
+                        
+                        # Try to get current value
+                        try:
+                            value_pattern = element.GetValuePattern()
+                            if value_pattern:
+                                field_info["value"] = value_pattern.Value
+                        except:
+                            pass
+                        
+                        input_fields.append(field_info)
+                    
+                    for child in element.GetChildren():
+                        find_inputs(child)
+                except:
+                    pass
+            
+            find_inputs(window)
+            
+            return {
+                "status": "success",
+                "window": window_info,
+                "ui_tree": ui_tree,
+                "text_content": list(set(all_text)),  # Remove duplicates
+                "clickable_elements": clickable_elements,
+                "input_fields": input_fields,
+                "element_count": len(clickable_elements) + len(input_fields)
+            }
+        
+        except Exception as e:
+            log.error(f"Screen info extraction error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Failed to get screen info: {e}"}
+
+    def find_ui_element(self, element_type: Optional[str] = None, name: Optional[str] = None,
+                       class_name: Optional[str] = None, automation_id: Optional[str] = None,
+                       window_title: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Finds specific UI elements on the screen for interaction.
+        
+        Args:
+            element_type: Type of element (e.g., "ButtonControl", "EditControl", "TextControl")
+            name: Name/label of the element (partial match)
+            class_name: Windows class name
+            automation_id: Automation ID of the element
+            window_title: Optional window title to search within
+        
+        Returns:
+            Dict with status and list of matching elements with their locations
+        """
+        if auto is None:
+            return {"status": "error", "message": "UI Automation not available. Install with: pip install uiautomation"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            # Get search root
+            if window_title:
+                root = auto.WindowControl(searchDepth=1, SubName=window_title)
+                if not root.Exists(0, 0):
+                    return {"status": "error", "message": f"Window '{window_title}' not found"}
+            else:
+                root = auto.GetForegroundControl()
+                if not root:
+                    return {"status": "error", "message": "No active window found"}
+            
+            # Build search criteria
+            search_kwargs = {}
+            if name:
+                search_kwargs['SubName'] = name
+            if class_name:
+                search_kwargs['ClassName'] = class_name
+            if automation_id:
+                search_kwargs['AutomationId'] = automation_id
+            
+            # Search for elements
+            found_elements = []
+            
+            def search_element(element, depth=0):
+                """Recursively search for matching elements"""
+                if depth > 10:  # Limit depth to prevent infinite loops
+                    return
+                
+                try:
+                    # Check if element matches criteria
+                    matches = True
+                    if element_type and element.ControlTypeName != element_type:
+                        matches = False
+                    if name and name.lower() not in element.Name.lower():
+                        matches = False
+                    if class_name and element.ClassName != class_name:
+                        matches = False
+                    if automation_id and hasattr(element, 'AutomationId') and element.AutomationId != automation_id:
+                        matches = False
+                    
+                    if matches and element.IsEnabled:
+                        element_info = {
+                            "type": element.ControlTypeName,
+                            "name": element.Name,
+                            "class": element.ClassName,
+                            "bounds": {
+                                "x": element.BoundingRectangle.left,
+                                "y": element.BoundingRectangle.top,
+                                "width": element.BoundingRectangle.width(),
+                                "height": element.BoundingRectangle.height(),
+                                "center_x": element.BoundingRectangle.left + element.BoundingRectangle.width() // 2,
+                                "center_y": element.BoundingRectangle.top + element.BoundingRectangle.height() // 2
+                            },
+                            "enabled": element.IsEnabled,
+                            "visible": element.IsEnabled  # Simplified visibility check
+                        }
+                        
+                        if hasattr(element, 'AutomationId') and element.AutomationId:
+                            element_info["automation_id"] = element.AutomationId
+                        
+                        # Try to get value if it's an input control
+                        try:
+                            value_pattern = element.GetValuePattern()
+                            if value_pattern:
+                                element_info["value"] = value_pattern.Value
+                        except:
+                            pass
+                        
+                        found_elements.append(element_info)
+                    
+                    # Search children
+                    for child in element.GetChildren():
+                        search_element(child, depth + 1)
+                except:
+                    pass
+            
+            search_element(root)
+            
+            return {
+                "status": "success",
+                "found": len(found_elements),
+                "elements": found_elements,
+                "message": f"Found {len(found_elements)} matching element(s)"
+            }
+        
+        except Exception as e:
+            log.error(f"UI element search error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Failed to find UI element: {e}"}
 
 class AgentExecutor:
     def __init__(self):

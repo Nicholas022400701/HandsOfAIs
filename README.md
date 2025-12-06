@@ -1,6 +1,6 @@
 # HandsOfAIs
 
-A powerful system-level automation framework that enables AI agents to interact with Windows systems through screen capture, keyboard/mouse simulation, and window management.
+A powerful system-level automation framework that enables AI agents to interact with Windows systems through token-efficient screen information extraction, keyboard/mouse simulation, and window management.
 
 ## Features
 
@@ -11,11 +11,26 @@ A powerful system-level automation framework that enables AI agents to interact 
 - ArXiv paper search
 
 ### New Windows System-Level Automation Features
-- **Screen Capture**: Capture screenshots of full screen, specific windows, or regions
+- **Token-Efficient Screen Information** (NEW!): Get structured UI information without screenshots - no token waste, lossless information
+- **Screen Capture**: Capture screenshots of full screen, specific windows, or regions (optional, for when images are needed)
 - **Keyboard Simulation**: Type text, press keys, and execute hotkey combinations
 - **Mouse Simulation**: Move cursor, click buttons, and scroll
 - **Window Management**: List, activate, minimize, maximize, and close windows
 - **Clipboard Operations**: Get, set, and clear clipboard content
+- **UI Element Discovery**: Find and interact with specific UI elements by name, type, or properties
+
+## Why Token-Efficient Screen Information?
+
+Traditional approaches use screenshots to let AI "see" the screen, but this has major drawbacks:
+- **High token cost**: Images consume many tokens in AI models
+- **Information loss**: Screenshots lose structured information about UI elements
+- **No direct interaction**: Can't directly reference specific buttons or fields
+
+Our solution uses **Windows UI Automation** to extract structured information:
+- **Near-zero token cost**: Text-based UI tree structure
+- **Lossless information**: Get exact element names, types, positions, and properties
+- **Direct interaction**: Can click/type into specific elements by reference
+- **Better for AI**: Structured JSON is easier for AI to understand than images
 
 ## Installation
 
@@ -32,7 +47,7 @@ pip install -r requirements.txt
 
 For Windows system-level automation, ensure all optional dependencies are installed:
 ```bash
-pip install pyautogui pillow pygetwindow pyperclip
+pip install pyautogui pillow pygetwindow pyperclip uiautomation
 ```
 
 ## Usage
@@ -67,9 +82,133 @@ Body:
 
 ### Available Commands
 
-#### 1. Screen Capture (`capture_screen`)
+#### 1. Get Screen Information (`get_screen_info`) - **RECOMMENDED**
 
-Capture screenshots of your screen, specific windows, or regions.
+**Token-efficient way to understand screen content without screenshots!**
+
+Gets structured information about UI elements on the screen using Windows UI Automation. This is much more efficient than screenshots and provides lossless, structured information.
+
+```json
+{
+  "command": "get_screen_info",
+  "args": {}
+}
+```
+
+Parameters:
+- `window_title` (optional): Focus on specific window (partial match). If None, uses active window.
+- `max_depth` (default: 3): Maximum depth to traverse UI tree
+- `include_invisible` (default: false): Include invisible elements
+
+**Returns:**
+- Window information (title, size, position)
+- Complete UI element tree with hierarchy
+- All visible text content
+- List of clickable elements (buttons, links, etc.) with positions
+- List of input fields with current values
+- No image data - pure structured information!
+
+**Example: Get info about active window**
+```json
+{
+  "command": "get_screen_info",
+  "args": {}
+}
+```
+
+**Example: Get info about specific window**
+```json
+{
+  "command": "get_screen_info",
+  "args": {
+    "window_title": "Chrome",
+    "max_depth": 4
+  }
+}
+```
+
+**Response example:**
+```json
+{
+  "status": "success",
+  "window": {
+    "title": "Google Chrome",
+    "class_name": "Chrome_WidgetWin_1",
+    "bounds": {"left": 0, "top": 0, "width": 1920, "height": 1080}
+  },
+  "text_content": ["File", "Edit", "View", "Search", "Hello World", ...],
+  "clickable_elements": [
+    {
+      "type": "ButtonControl",
+      "name": "Close",
+      "bounds": {"x": 1880, "y": 10, "center_x": 1900, "center_y": 20},
+      "enabled": true
+    }
+  ],
+  "input_fields": [
+    {
+      "type": "EditControl",
+      "name": "Address bar",
+      "value": "https://google.com",
+      "bounds": {"x": 100, "y": 50}
+    }
+  ]
+}
+```
+
+#### 2. Find UI Element (`find_ui_element`)
+
+Find specific UI elements for interaction. Use this to locate buttons, input fields, or other controls.
+
+```json
+{
+  "command": "find_ui_element",
+  "args": {
+    "name": "Submit",
+    "element_type": "ButtonControl"
+  }
+}
+```
+
+Parameters:
+- `element_type` (optional): Type like "ButtonControl", "EditControl", "TextControl"
+- `name` (optional): Element name/label (partial match)
+- `class_name` (optional): Windows class name
+- `automation_id` (optional): Automation ID
+- `window_title` (optional): Search within specific window
+
+**Example: Find a button**
+```json
+{
+  "command": "find_ui_element",
+  "args": {
+    "name": "Submit",
+    "element_type": "ButtonControl"
+  }
+}
+```
+
+**Example: Find all input fields**
+```json
+{
+  "command": "find_ui_element",
+  "args": {
+    "element_type": "EditControl"
+  }
+}
+```
+
+**Response includes:**
+- Element type, name, and properties
+- Exact position (x, y, width, height)
+- Center coordinates for clicking
+- Current value (for input fields)
+- Enabled/visible status
+
+#### 3. Screen Capture (`capture_screen`) - Optional
+
+Capture screenshots when you really need images (e.g., for visual verification). 
+**Note**: Use `get_screen_info` instead when possible to save tokens!
 
 ```json
 {
@@ -116,7 +255,7 @@ Parameters:
 }
 ```
 
-#### 2. Keyboard Simulation (`simulate_keyboard`)
+#### 4. Keyboard Simulation (`simulate_keyboard`)
 
 Simulate keyboard input including typing, key presses, and hotkeys.
 
@@ -171,7 +310,7 @@ Parameters:
 }
 ```
 
-#### 3. Mouse Simulation (`simulate_mouse`)
+#### 5. Mouse Simulation (`simulate_mouse`)
 
 Control mouse movements, clicks, and scrolling.
 
@@ -241,7 +380,7 @@ Parameters:
 }
 ```
 
-#### 4. Window Management (`get_windows`)
+#### 6. Window Management (`get_windows`)
 
 List and manage application windows.
 
@@ -290,7 +429,7 @@ Parameters:
 }
 ```
 
-#### 5. Clipboard Operations (`clipboard_operations`)
+#### 7. Clipboard Operations (`clipboard_operations`)
 
 Read from and write to the system clipboard.
 
@@ -335,6 +474,112 @@ Parameters:
   "args": {
     "action": "clear"
   }
+}
+```
+
+## Workflow Examples
+
+### Example 1: Token-Efficient Screen Understanding
+Instead of sending screenshots, get structured information:
+
+```json
+// Step 1: Get screen info (costs ~100 tokens vs 1000+ for screenshot)
+{
+  "command": "get_screen_info",
+  "args": {}
+}
+
+// AI receives structured data like:
+// - "Submit" button at (100, 200)
+// - "Username" input field with value ""
+// - Text content: ["Login", "Username", "Password", "Submit"]
+
+// Step 2: AI can now interact precisely
+{
+  "command": "find_ui_element",
+  "args": {
+    "name": "Username",
+    "element_type": "EditControl"
+  }
+}
+
+// Step 3: Click on the found element
+{
+  "command": "simulate_mouse",
+  "args": {
+    "action": "click",
+    "x": 150,
+    "y": 100
+  }
+}
+
+// Step 4: Type into the field
+{
+  "command": "simulate_keyboard",
+  "args": {
+    "action": "type",
+    "text": "myusername"
+  }
+}
+```
+
+### Example 2: Automated Form Filling
+```json
+// Get all input fields
+{
+  "command": "get_screen_info",
+  "args": {"max_depth": 5}
+}
+
+// AI sees input_fields: [
+//   {"name": "First Name", "bounds": {"x": 100, "y": 50}},
+//   {"name": "Last Name", "bounds": {"x": 100, "y": 100}},
+//   {"name": "Email", "bounds": {"x": 100, "y": 150}}
+// ]
+
+// Fill each field
+{
+  "command": "simulate_mouse",
+  "args": {"action": "click", "x": 100, "y": 50}
+}
+{
+  "command": "simulate_keyboard",
+  "args": {"action": "type", "text": "John"}
+}
+// Repeat for other fields...
+```
+
+### Example 3: Browser Automation
+```json
+// Find browser address bar
+{
+  "command": "find_ui_element",
+  "args": {
+    "name": "Address",
+    "element_type": "EditControl",
+    "window_title": "Chrome"
+  }
+}
+
+// Click address bar
+{
+  "command": "simulate_mouse",
+  "args": {"action": "click", "x": 500, "y": 50}
+}
+
+// Type URL
+{
+  "command": "simulate_keyboard",
+  "args": {
+    "action": "type",
+    "text": "https://example.com"
+  }
+}
+
+// Press Enter
+{
+  "command": "simulate_keyboard",
+  "args": {"action": "press", "key": "enter"}
 }
 ```
 
