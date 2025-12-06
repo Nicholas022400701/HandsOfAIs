@@ -1,0 +1,16 @@
+# Core dependencies
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+requests>=2.31.0
+
+# Optional but recommended
+coloredlogs>=15.0
+
+# SSH support (optional)
+paramiko>=3.0.0
+
+# Windows system-level automation (Windows only)
+pyautogui>=0.9.54
+Pillow>=10.3.0
+pygetwindow>=0.0.9
+pyperclip>=1.8.2

@@ -34,6 +34,28 @@ try:
 except ImportError:
     coloredlogs = None
 
+# Windows automation libraries (optional, for system-level automation)
+try:
+    import pyautogui
+    import PIL.Image
+    import PIL.ImageGrab
+except ImportError:
+    pyautogui = None
+    PIL = None
+    logging.warning("Windows automation libraries not found. Install with: pip install pyautogui pillow")
+
+try:
+    import pygetwindow as gw
+except ImportError:
+    gw = None
+    logging.warning("pygetwindow not found. Install with: pip install pygetwindow")
+
+try:
+    import pyperclip
+except ImportError:
+    pyperclip = None
+    logging.warning("pyperclip not found. Install with: pip install pyperclip")
+
 # SSH Library Import (Keeping SSH as it might be useful, but not required for WSL)
 try:
     import paramiko
@@ -488,6 +510,12 @@ class Toolbelt:
             "session_close": self.session_close,
             "check_update_error": self.check_update_error,
             "search_arxiv": self.search_arxiv,
+            # Windows system-level automation tools
+            "capture_screen": self.capture_screen,
+            "simulate_keyboard": self.simulate_keyboard,
+            "simulate_mouse": self.simulate_mouse,
+            "get_windows": self.get_windows,
+            "clipboard_operations": self.clipboard_operations,
         }
 
     def _validate_timeout(self, timeout: Optional[int]) -> int:
@@ -694,6 +722,294 @@ class Toolbelt:
             
             return {"status": "success", "message": f"Successfully deleted {path_str}"}
         except Exception as e: return {"status": "error", "message": f"Failed to delete path: {e}"}
+
+    # --- Windows System-Level Automation Tools ---
+
+    def capture_screen(self, region: Optional[str] = None, filename: Optional[str] = None, 
+                       window_title: Optional[str] = None, return_base64: bool = True) -> Dict[str, Any]:
+        """
+        Captures a screenshot of the screen or a specific window.
+        
+        Args:
+            region: Optional region to capture as "x,y,width,height" (e.g., "100,100,800,600")
+            filename: Optional filename to save the screenshot (saved in workspace)
+            window_title: Optional window title to capture (partial match)
+            return_base64: If True, returns the image as base64 string in the response
+        
+        Returns:
+            Dict with status, optional base64 image data, and file path if saved
+        """
+        if pyautogui is None or PIL is None:
+            return {"status": "error", "message": "Screen capture not available. Install with: pip install pyautogui pillow"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            screenshot = None
+            
+            # Capture specific window
+            if window_title:
+                if gw is None:
+                    return {"status": "error", "message": "Window capture requires pygetwindow. Install with: pip install pygetwindow"}
+                
+                windows = gw.getWindowsWithTitle(window_title)
+                if not windows:
+                    return {"status": "error", "message": f"No window found with title containing '{window_title}'"}
+                
+                win = windows[0]
+                if win.isMinimized:
+                    return {"status": "error", "message": "Target window is minimized. Cannot capture."}
+                
+                # Capture window region
+                screenshot = pyautogui.screenshot(region=(win.left, win.top, win.width, win.height))
+            
+            # Capture specific region
+            elif region:
+                try:
+                    x, y, w, h = map(int, region.split(','))
+                    screenshot = pyautogui.screenshot(region=(x, y, w, h))
+                except ValueError:
+                    return {"status": "error", "message": "Invalid region format. Use 'x,y,width,height'"}
+            
+            # Capture full screen
+            else:
+                screenshot = pyautogui.screenshot()
+            
+            result = {"status": "success"}
+            
+            # Save to file if requested
+            if filename:
+                try:
+                    filepath = SafetySandbox.sanitize_path(filename)
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    screenshot.save(str(filepath))
+                    result["saved_to"] = filename
+                except Exception as e:
+                    return {"status": "error", "message": f"Failed to save screenshot: {e}"}
+            
+            # Return base64 encoded image
+            if return_base64:
+                import io
+                buffer = io.BytesIO()
+                screenshot.save(buffer, format='PNG')
+                img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                result["image_base64"] = img_base64
+                result["image_size"] = {"width": screenshot.width, "height": screenshot.height}
+            
+            result["message"] = "Screenshot captured successfully"
+            return result
+            
+        except Exception as e:
+            log.error(f"Screen capture error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Screen capture failed: {e}"}
+
+    def simulate_keyboard(self, action: str, text: Optional[str] = None, 
+                         key: Optional[str] = None, keys: Optional[List[str]] = None,
+                         interval: float = 0.0) -> Dict[str, Any]:
+        """
+        Simulates keyboard input.
+        
+        Args:
+            action: Action to perform - 'type', 'press', 'hotkey'
+            text: Text to type (for 'type' action)
+            key: Single key to press (for 'press' action)
+            keys: List of keys for hotkey combination (for 'hotkey' action, e.g., ['ctrl', 'c'])
+            interval: Delay between keystrokes in seconds (for 'type' action)
+        
+        Returns:
+            Dict with status and message
+        """
+        if pyautogui is None:
+            return {"status": "error", "message": "Keyboard simulation not available. Install with: pip install pyautogui"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'type':
+                if not text:
+                    return {"status": "error", "message": "Text is required for 'type' action"}
+                pyautogui.write(text, interval=interval)
+                return {"status": "success", "message": f"Typed text: {text[:50]}{'...' if len(text) > 50 else ''}"}
+            
+            elif action == 'press':
+                if not key:
+                    return {"status": "error", "message": "Key is required for 'press' action"}
+                pyautogui.press(key)
+                return {"status": "success", "message": f"Pressed key: {key}"}
+            
+            elif action == 'hotkey':
+                if not keys or len(keys) < 2:
+                    return {"status": "error", "message": "At least 2 keys required for 'hotkey' action (e.g., ['ctrl', 'c'])"}
+                pyautogui.hotkey(*keys)
+                return {"status": "success", "message": f"Pressed hotkey: {'+'.join(keys)}"}
+            
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}. Use 'type', 'press', or 'hotkey'"}
+        
+        except Exception as e:
+            log.error(f"Keyboard simulation error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Keyboard simulation failed: {e}"}
+
+    def simulate_mouse(self, action: str, x: Optional[int] = None, y: Optional[int] = None,
+                      button: str = 'left', clicks: int = 1, duration: float = 0.0) -> Dict[str, Any]:
+        """
+        Simulates mouse operations.
+        
+        Args:
+            action: Action to perform - 'move', 'click', 'drag', 'scroll', 'position'
+            x, y: Coordinates (for move, click, drag actions)
+            button: Mouse button - 'left', 'right', 'middle' (for click action)
+            clicks: Number of clicks (for click action)
+            duration: Duration of movement in seconds (for move and drag actions)
+        
+        Returns:
+            Dict with status, message, and current position
+        """
+        if pyautogui is None:
+            return {"status": "error", "message": "Mouse simulation not available. Install with: pip install pyautogui"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'position':
+                pos = pyautogui.position()
+                return {"status": "success", "position": {"x": pos.x, "y": pos.y}}
+            
+            elif action == 'move':
+                if x is None or y is None:
+                    return {"status": "error", "message": "x and y coordinates required for 'move' action"}
+                pyautogui.moveTo(x, y, duration=duration)
+                return {"status": "success", "message": f"Moved to ({x}, {y})", "position": {"x": x, "y": y}}
+            
+            elif action == 'click':
+                if x is not None and y is not None:
+                    pyautogui.click(x, y, clicks=clicks, button=button)
+                    msg = f"Clicked {button} button {clicks} time(s) at ({x}, {y})"
+                else:
+                    pyautogui.click(clicks=clicks, button=button)
+                    pos = pyautogui.position()
+                    msg = f"Clicked {button} button {clicks} time(s) at current position ({pos.x}, {pos.y})"
+                return {"status": "success", "message": msg}
+            
+            elif action == 'scroll':
+                if x is None:
+                    return {"status": "error", "message": "Scroll amount (x parameter) required for 'scroll' action"}
+                pyautogui.scroll(x)
+                return {"status": "success", "message": f"Scrolled {x} units"}
+            
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}. Use 'move', 'click', 'scroll', or 'position'"}
+        
+        except Exception as e:
+            log.error(f"Mouse simulation error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Mouse simulation failed: {e}"}
+
+    def get_windows(self, action: str = 'list', title: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Lists or manages windows.
+        
+        Args:
+            action: Action to perform - 'list', 'activate', 'minimize', 'maximize', 'close'
+            title: Window title (partial match) for actions other than 'list'
+        
+        Returns:
+            Dict with status and window information
+        """
+        if gw is None:
+            return {"status": "error", "message": "Window management not available. Install with: pip install pygetwindow"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'list':
+                all_windows = gw.getAllWindows()
+                # Filter out windows with empty titles
+                windows_info = [
+                    {"title": w.title, "left": w.left, "top": w.top, 
+                     "width": w.width, "height": w.height, 
+                     "minimized": w.isMinimized, "maximized": w.isMaximized,
+                     "active": w.isActive}
+                    for w in all_windows if w.title.strip()
+                ]
+                return {"status": "success", "windows": windows_info, "count": len(windows_info)}
+            
+            else:
+                if not title:
+                    return {"status": "error", "message": f"Window title required for '{action}' action"}
+                
+                windows = gw.getWindowsWithTitle(title)
+                if not windows:
+                    return {"status": "error", "message": f"No window found with title containing '{title}'"}
+                
+                win = windows[0]
+                
+                if action == 'activate':
+                    if win.isMinimized:
+                        win.restore()
+                    win.activate()
+                    return {"status": "success", "message": f"Activated window: {win.title}"}
+                
+                elif action == 'minimize':
+                    win.minimize()
+                    return {"status": "success", "message": f"Minimized window: {win.title}"}
+                
+                elif action == 'maximize':
+                    win.maximize()
+                    return {"status": "success", "message": f"Maximized window: {win.title}"}
+                
+                elif action == 'close':
+                    win.close()
+                    return {"status": "success", "message": f"Closed window: {win.title}"}
+                
+                else:
+                    return {"status": "error", "message": f"Unknown action: {action}"}
+        
+        except Exception as e:
+            log.error(f"Window management error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Window management failed: {e}"}
+
+    def clipboard_operations(self, action: str, text: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Performs clipboard operations.
+        
+        Args:
+            action: Action to perform - 'get', 'set', 'clear'
+            text: Text to set to clipboard (for 'set' action)
+        
+        Returns:
+            Dict with status and clipboard content (for 'get' action)
+        """
+        if pyperclip is None:
+            return {"status": "error", "message": "Clipboard operations not available. Install with: pip install pyperclip"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'get':
+                content = pyperclip.paste()
+                return {"status": "success", "content": content, "length": len(content)}
+            
+            elif action == 'set':
+                if text is None:
+                    return {"status": "error", "message": "Text is required for 'set' action"}
+                pyperclip.copy(text)
+                return {"status": "success", "message": f"Copied {len(text)} characters to clipboard"}
+            
+            elif action == 'clear':
+                pyperclip.copy('')
+                return {"status": "success", "message": "Clipboard cleared"}
+            
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}. Use 'get', 'set', or 'clear'"}
+        
+        except Exception as e:
+            log.error(f"Clipboard operation error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Clipboard operation failed: {e}"}
 
 class AgentExecutor:
     def __init__(self):
