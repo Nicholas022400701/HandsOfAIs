@@ -16,6 +16,7 @@ import base64
 import urllib.parse
 import platform
 import shlex
+import io
 from typing import Dict, Any, Callable, List, IO, Optional, Tuple
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -33,6 +34,43 @@ try:
     import coloredlogs
 except ImportError:
     coloredlogs = None
+
+# Windows automation libraries (optional, for system-level automation)
+try:
+    import pyautogui
+    import PIL.Image
+    import PIL.ImageGrab
+except ImportError:
+    pyautogui = None
+    PIL = None
+    logging.warning("Windows automation libraries not found. Install with: pip install pyautogui pillow")
+
+try:
+    import pygetwindow as gw
+except ImportError:
+    gw = None
+    logging.warning("pygetwindow not found. Install with: pip install pygetwindow")
+
+try:
+    import pyperclip
+except ImportError:
+    pyperclip = None
+    logging.warning("pyperclip not found. Install with: pip install pyperclip")
+
+# Windows UI Automation (for getting screen info without screenshots)
+try:
+    import uiautomation as auto
+except ImportError:
+    auto = None
+    logging.warning("uiautomation not found. Install with: pip install uiautomation")
+
+# OCR for text extraction from screen
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:
+    pytesseract = None
+    logging.warning("pytesseract not found. Install with: pip install pytesseract")
 
 # SSH Library Import (Keeping SSH as it might be useful, but not required for WSL)
 try:
@@ -488,6 +526,15 @@ class Toolbelt:
             "session_close": self.session_close,
             "check_update_error": self.check_update_error,
             "search_arxiv": self.search_arxiv,
+            # Windows system-level automation tools
+            "capture_screen": self.capture_screen,
+            "simulate_keyboard": self.simulate_keyboard,
+            "simulate_mouse": self.simulate_mouse,
+            "get_windows": self.get_windows,
+            "clipboard_operations": self.clipboard_operations,
+            # Screen information without screenshots (token-efficient)
+            "get_screen_info": self.get_screen_info,
+            "find_ui_element": self.find_ui_element,
         }
 
     def _validate_timeout(self, timeout: Optional[int]) -> int:
@@ -694,6 +741,633 @@ class Toolbelt:
             
             return {"status": "success", "message": f"Successfully deleted {path_str}"}
         except Exception as e: return {"status": "error", "message": f"Failed to delete path: {e}"}
+
+    # --- Windows System-Level Automation Tools ---
+
+    def capture_screen(self, region: Optional[str] = None, filename: Optional[str] = None, 
+                       window_title: Optional[str] = None, return_base64: bool = True) -> Dict[str, Any]:
+        """
+        Captures a screenshot of the screen or a specific window.
+        
+        Args:
+            region: Optional region to capture as "x,y,width,height" (e.g., "100,100,800,600")
+            filename: Optional filename to save the screenshot (saved in workspace)
+            window_title: Optional window title to capture (partial match)
+            return_base64: If True, returns the image as base64 string in the response
+        
+        Returns:
+            Dict with status, optional base64 image data, and file path if saved
+        """
+        if pyautogui is None or PIL is None:
+            return {"status": "error", "message": "Screen capture not available. Install with: pip install pyautogui pillow"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            screenshot = None
+            
+            # Capture specific window
+            if window_title:
+                if gw is None:
+                    return {"status": "error", "message": "Window capture requires pygetwindow. Install with: pip install pygetwindow"}
+                
+                windows = gw.getWindowsWithTitle(window_title)
+                if not windows:
+                    return {"status": "error", "message": f"No window found with title containing '{window_title}'"}
+                
+                win = windows[0]
+                if win.isMinimized:
+                    return {"status": "error", "message": "Target window is minimized. Cannot capture."}
+                
+                # Capture window region
+                screenshot = pyautogui.screenshot(region=(win.left, win.top, win.width, win.height))
+            
+            # Capture specific region
+            elif region:
+                try:
+                    x, y, w, h = map(int, region.split(','))
+                    screenshot = pyautogui.screenshot(region=(x, y, w, h))
+                except ValueError:
+                    return {"status": "error", "message": "Invalid region format. Use 'x,y,width,height'"}
+            
+            # Capture full screen
+            else:
+                screenshot = pyautogui.screenshot()
+            
+            result = {"status": "success"}
+            
+            # Save to file if requested
+            if filename:
+                try:
+                    filepath = SafetySandbox.sanitize_path(filename)
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    screenshot.save(str(filepath))
+                    result["saved_to"] = filename
+                except Exception as e:
+                    return {"status": "error", "message": f"Failed to save screenshot: {e}"}
+            
+            # Return base64 encoded image
+            if return_base64:
+                buffer = io.BytesIO()
+                screenshot.save(buffer, format='PNG')
+                img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                result["image_base64"] = img_base64
+                result["image_size"] = {"width": screenshot.width, "height": screenshot.height}
+            
+            result["message"] = "Screenshot captured successfully"
+            return result
+            
+        except Exception as e:
+            log.error(f"Screen capture error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Screen capture failed: {e}"}
+
+    def simulate_keyboard(self, action: str, text: Optional[str] = None, 
+                         key: Optional[str] = None, keys: Optional[List[str]] = None,
+                         interval: float = 0.0) -> Dict[str, Any]:
+        """
+        Simulates keyboard input.
+        
+        Args:
+            action: Action to perform - 'type', 'press', 'hotkey'
+            text: Text to type (for 'type' action)
+            key: Single key to press (for 'press' action)
+            keys: List of keys for hotkey combination (for 'hotkey' action, e.g., ['ctrl', 'c'])
+            interval: Delay between keystrokes in seconds (for 'type' action)
+        
+        Returns:
+            Dict with status and message
+        """
+        if pyautogui is None:
+            return {"status": "error", "message": "Keyboard simulation not available. Install with: pip install pyautogui"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'type':
+                if not text:
+                    return {"status": "error", "message": "Text is required for 'type' action"}
+                pyautogui.write(text, interval=interval)
+                return {"status": "success", "message": f"Typed text: {text[:50]}{'...' if len(text) > 50 else ''}"}
+            
+            elif action == 'press':
+                if not key:
+                    return {"status": "error", "message": "Key is required for 'press' action"}
+                pyautogui.press(key)
+                return {"status": "success", "message": f"Pressed key: {key}"}
+            
+            elif action == 'hotkey':
+                if not keys or len(keys) < 2:
+                    return {"status": "error", "message": "At least 2 keys required for 'hotkey' action (e.g., ['ctrl', 'c'])"}
+                pyautogui.hotkey(*keys)
+                return {"status": "success", "message": f"Pressed hotkey: {'+'.join(keys)}"}
+            
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}. Use 'type', 'press', or 'hotkey'"}
+        
+        except Exception as e:
+            log.error(f"Keyboard simulation error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Keyboard simulation failed: {e}"}
+
+    def simulate_mouse(self, action: str, x: Optional[int] = None, y: Optional[int] = None,
+                      button: str = 'left', clicks: int = 1, duration: float = 0.0) -> Dict[str, Any]:
+        """
+        Simulates mouse operations.
+        
+        Args:
+            action: Action to perform - 'move', 'click', 'drag', 'scroll', 'position'
+            x, y: Coordinates (for move, click, drag actions)
+            button: Mouse button - 'left', 'right', 'middle' (for click action)
+            clicks: Number of clicks (for click action)
+            duration: Duration of movement in seconds (for move and drag actions)
+        
+        Returns:
+            Dict with status, message, and current position
+        """
+        if pyautogui is None:
+            return {"status": "error", "message": "Mouse simulation not available. Install with: pip install pyautogui"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'position':
+                pos = pyautogui.position()
+                return {"status": "success", "position": {"x": pos.x, "y": pos.y}}
+            
+            elif action == 'move':
+                if x is None or y is None:
+                    return {"status": "error", "message": "x and y coordinates required for 'move' action"}
+                pyautogui.moveTo(x, y, duration=duration)
+                return {"status": "success", "message": f"Moved to ({x}, {y})", "position": {"x": x, "y": y}}
+            
+            elif action == 'click':
+                if x is not None and y is not None:
+                    pyautogui.click(x, y, clicks=clicks, button=button)
+                    msg = f"Clicked {button} button {clicks} time(s) at ({x}, {y})"
+                else:
+                    pyautogui.click(clicks=clicks, button=button)
+                    pos = pyautogui.position()
+                    msg = f"Clicked {button} button {clicks} time(s) at current position ({pos.x}, {pos.y})"
+                return {"status": "success", "message": msg}
+            
+            elif action == 'scroll':
+                if x is None:
+                    return {"status": "error", "message": "Scroll amount (x parameter) required for 'scroll' action"}
+                pyautogui.scroll(x)
+                return {"status": "success", "message": f"Scrolled {x} units"}
+            
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}. Use 'move', 'click', 'scroll', or 'position'"}
+        
+        except Exception as e:
+            log.error(f"Mouse simulation error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Mouse simulation failed: {e}"}
+
+    def get_windows(self, action: str = 'list', title: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Lists or manages windows.
+        
+        Args:
+            action: Action to perform - 'list', 'activate', 'minimize', 'maximize', 'close'
+            title: Window title (partial match) for actions other than 'list'
+        
+        Returns:
+            Dict with status and window information
+        """
+        if gw is None:
+            return {"status": "error", "message": "Window management not available. Install with: pip install pygetwindow"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'list':
+                all_windows = gw.getAllWindows()
+                # Filter out windows with empty titles
+                windows_info = [
+                    {"title": w.title, "left": w.left, "top": w.top, 
+                     "width": w.width, "height": w.height, 
+                     "minimized": w.isMinimized, "maximized": w.isMaximized,
+                     "active": w.isActive}
+                    for w in all_windows if w.title.strip()
+                ]
+                return {"status": "success", "windows": windows_info, "count": len(windows_info)}
+            
+            else:
+                if not title:
+                    return {"status": "error", "message": f"Window title required for '{action}' action"}
+                
+                windows = gw.getWindowsWithTitle(title)
+                if not windows:
+                    return {"status": "error", "message": f"No window found with title containing '{title}'"}
+                
+                win = windows[0]
+                
+                if action == 'activate':
+                    if win.isMinimized:
+                        win.restore()
+                    win.activate()
+                    return {"status": "success", "message": f"Activated window: {win.title}"}
+                
+                elif action == 'minimize':
+                    win.minimize()
+                    return {"status": "success", "message": f"Minimized window: {win.title}"}
+                
+                elif action == 'maximize':
+                    win.maximize()
+                    return {"status": "success", "message": f"Maximized window: {win.title}"}
+                
+                elif action == 'close':
+                    win.close()
+                    return {"status": "success", "message": f"Closed window: {win.title}"}
+                
+                else:
+                    return {"status": "error", "message": f"Unknown action: {action}"}
+        
+        except Exception as e:
+            log.error(f"Window management error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Window management failed: {e}"}
+
+    def clipboard_operations(self, action: str, text: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Performs clipboard operations.
+        
+        Args:
+            action: Action to perform - 'get', 'set', 'clear'
+            text: Text to set to clipboard (for 'set' action)
+        
+        Returns:
+            Dict with status and clipboard content (for 'get' action)
+        """
+        if pyperclip is None:
+            return {"status": "error", "message": "Clipboard operations not available. Install with: pip install pyperclip"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            if action == 'get':
+                content = pyperclip.paste()
+                return {"status": "success", "content": content, "length": len(content)}
+            
+            elif action == 'set':
+                if text is None:
+                    return {"status": "error", "message": "Text is required for 'set' action"}
+                pyperclip.copy(text)
+                return {"status": "success", "message": f"Copied {len(text)} characters to clipboard"}
+            
+            elif action == 'clear':
+                pyperclip.copy('')
+                return {"status": "success", "message": "Clipboard cleared"}
+            
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}. Use 'get', 'set', or 'clear'"}
+        
+        except Exception as e:
+            log.error(f"Clipboard operation error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Clipboard operation failed: {e}"}
+
+    # --- Screen Information Tools (Token-Efficient, No Screenshots) ---
+
+    def get_screen_info(self, window_title: Optional[str] = None, max_depth: int = 3, 
+                       include_invisible: bool = False) -> Dict[str, Any]:
+        """
+        Gets structured information about screen elements using UI Automation.
+        This is much more token-efficient than screenshots and provides lossless information.
+        
+        Args:
+            window_title: Optional window title to focus on (partial match). If None, uses active window.
+            max_depth: Maximum depth to traverse the UI tree (default: 3)
+            include_invisible: Whether to include invisible elements (default: False)
+        
+        Returns:
+            Dict with status and structured UI information (element tree, text content, controls)
+        """
+        if auto is None:
+            return {"status": "error", "message": "UI Automation not available. Install with: pip install uiautomation"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            # Get target window
+            if window_title:
+                # Find window by title
+                window = auto.WindowControl(searchDepth=1, SubName=window_title)
+                if not window.Exists(0, 0):
+                    return {"status": "error", "message": f"Window with title '{window_title}' not found"}
+            else:
+                # Get active window
+                window = auto.GetForegroundControl()
+                if not window:
+                    return {"status": "error", "message": "No active window found"}
+            
+            # Extract window information
+            window_info = {
+                "title": window.Name,
+                "class_name": window.ClassName,
+                "control_type": window.ControlTypeName,
+                "bounds": {
+                    "left": window.BoundingRectangle.left,
+                    "top": window.BoundingRectangle.top,
+                    "right": window.BoundingRectangle.right,
+                    "bottom": window.BoundingRectangle.bottom,
+                    "width": window.BoundingRectangle.width(),
+                    "height": window.BoundingRectangle.height()
+                }
+            }
+            
+            # Extract UI tree structure
+            def extract_element_info(element, current_depth=0):
+                """Recursively extract element information"""
+                if current_depth > max_depth:
+                    return None
+                
+                # Check visibility - try multiple methods
+                is_visible = True
+                try:
+                    # Check if element is off-screen (width/height <= 0)
+                    if element.BoundingRectangle.width() <= 0 or element.BoundingRectangle.height() <= 0:
+                        is_visible = False
+                    # Check if element is enabled (often correlates with visibility)
+                    if not element.IsEnabled:
+                        is_visible = False
+                except:
+                    pass
+                
+                # Skip invisible elements if requested
+                if not include_invisible and not is_visible:
+                    return None
+                
+                info = {
+                    "type": element.ControlTypeName,
+                    "name": element.Name,
+                    "class": element.ClassName,
+                    "enabled": element.IsEnabled,
+                    "visible": is_visible,
+                    "bounds": {
+                        "x": element.BoundingRectangle.left,
+                        "y": element.BoundingRectangle.top,
+                        "width": element.BoundingRectangle.width(),
+                        "height": element.BoundingRectangle.height()
+                    }
+                }
+                
+                # Add automation ID if available
+                if hasattr(element, 'AutomationId') and element.AutomationId:
+                    info["automation_id"] = element.AutomationId
+                
+                # Add value for input controls
+                if hasattr(element, 'GetValuePattern'):
+                    try:
+                        value_pattern = element.GetValuePattern()
+                        if value_pattern:
+                            info["value"] = value_pattern.Value
+                    except:
+                        pass
+                
+                # Add text for text controls
+                if hasattr(element, 'GetTextPattern'):
+                    try:
+                        text_pattern = element.GetTextPattern()
+                        if text_pattern:
+                            info["text"] = text_pattern.DocumentRange.GetText(-1)
+                    except:
+                        pass
+                
+                # Get children
+                children = []
+                try:
+                    for child in element.GetChildren():
+                        child_info = extract_element_info(child, current_depth + 1)
+                        if child_info:
+                            children.append(child_info)
+                except:
+                    pass
+                
+                if children:
+                    info["children"] = children
+                
+                return info
+            
+            # Extract UI tree
+            ui_tree = extract_element_info(window, 0)
+            
+            # Extract all visible text from the window
+            all_text = []
+            def collect_text(element):
+                """Recursively collect all text from elements"""
+                try:
+                    if element.Name and element.Name.strip():
+                        all_text.append(element.Name)
+                    
+                    # Try to get text content
+                    if hasattr(element, 'GetTextPattern'):
+                        try:
+                            text_pattern = element.GetTextPattern()
+                            if text_pattern:
+                                text_content = text_pattern.DocumentRange.GetText(-1)
+                                if text_content and text_content.strip():
+                                    all_text.append(text_content)
+                        except:
+                            pass
+                    
+                    for child in element.GetChildren():
+                        collect_text(child)
+                except:
+                    pass
+            
+            collect_text(window)
+            
+            # Extract clickable elements (buttons, links, menu items)
+            clickable_elements = []
+            def find_clickable(element, path=""):
+                """Find all clickable elements"""
+                try:
+                    element_type = element.ControlTypeName
+                    if element_type in ["ButtonControl", "HyperlinkControl", "MenuItemControl", 
+                                       "TabItemControl", "ListItemControl"]:
+                        clickable_elements.append({
+                            "type": element_type,
+                            "name": element.Name,
+                            "path": path,
+                            "bounds": {
+                                "x": element.BoundingRectangle.left,
+                                "y": element.BoundingRectangle.top,
+                                "width": element.BoundingRectangle.width(),
+                                "height": element.BoundingRectangle.height()
+                            },
+                            "enabled": element.IsEnabled
+                        })
+                    
+                    for i, child in enumerate(element.GetChildren()):
+                        find_clickable(child, f"{path}/{element.ControlTypeName}[{i}]")
+                except:
+                    pass
+            
+            find_clickable(window)
+            
+            # Extract input fields
+            input_fields = []
+            def find_inputs(element):
+                """Find all input fields"""
+                try:
+                    element_type = element.ControlTypeName
+                    if element_type in ["EditControl", "TextControl", "ComboBoxControl"]:
+                        field_info = {
+                            "type": element_type,
+                            "name": element.Name,
+                            "class": element.ClassName,
+                            "bounds": {
+                                "x": element.BoundingRectangle.left,
+                                "y": element.BoundingRectangle.top
+                            },
+                            "enabled": element.IsEnabled
+                        }
+                        
+                        # Try to get current value
+                        try:
+                            value_pattern = element.GetValuePattern()
+                            if value_pattern:
+                                field_info["value"] = value_pattern.Value
+                        except:
+                            pass
+                        
+                        input_fields.append(field_info)
+                    
+                    for child in element.GetChildren():
+                        find_inputs(child)
+                except:
+                    pass
+            
+            find_inputs(window)
+            
+            return {
+                "status": "success",
+                "window": window_info,
+                "ui_tree": ui_tree,
+                "text_content": list(set(all_text)),  # Remove duplicates
+                "clickable_elements": clickable_elements,
+                "input_fields": input_fields,
+                "element_count": len(clickable_elements) + len(input_fields)
+            }
+        
+        except Exception as e:
+            log.error(f"Screen info extraction error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Failed to get screen info: {e}"}
+
+    def find_ui_element(self, element_type: Optional[str] = None, name: Optional[str] = None,
+                       class_name: Optional[str] = None, automation_id: Optional[str] = None,
+                       window_title: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Finds specific UI elements on the screen for interaction.
+        
+        Args:
+            element_type: Type of element (e.g., "ButtonControl", "EditControl", "TextControl")
+            name: Name/label of the element (partial match)
+            class_name: Windows class name
+            automation_id: Automation ID of the element
+            window_title: Optional window title to search within
+        
+        Returns:
+            Dict with status and list of matching elements with their locations
+        """
+        if auto is None:
+            return {"status": "error", "message": "UI Automation not available. Install with: pip install uiautomation"}
+        
+        if platform.system() != "Windows":
+            return {"status": "error", "message": "This feature is only available on Windows."}
+        
+        try:
+            # Get search root
+            if window_title:
+                root = auto.WindowControl(searchDepth=1, SubName=window_title)
+                if not root.Exists(0, 0):
+                    return {"status": "error", "message": f"Window '{window_title}' not found"}
+            else:
+                root = auto.GetForegroundControl()
+                if not root:
+                    return {"status": "error", "message": "No active window found"}
+            
+            # Build search criteria
+            search_kwargs = {}
+            if name:
+                search_kwargs['SubName'] = name
+            if class_name:
+                search_kwargs['ClassName'] = class_name
+            if automation_id:
+                search_kwargs['AutomationId'] = automation_id
+            
+            # Search for elements
+            found_elements = []
+            
+            def search_element(element, depth=0):
+                """Recursively search for matching elements"""
+                if depth > 10:  # Limit depth to prevent infinite loops
+                    return
+                
+                try:
+                    # Check if element matches criteria
+                    matches = True
+                    if element_type and element.ControlTypeName != element_type:
+                        matches = False
+                    if name and name.lower() not in element.Name.lower():
+                        matches = False
+                    if class_name and element.ClassName != class_name:
+                        matches = False
+                    if automation_id and hasattr(element, 'AutomationId') and element.AutomationId != automation_id:
+                        matches = False
+                    
+                    if matches and element.IsEnabled:
+                        element_info = {
+                            "type": element.ControlTypeName,
+                            "name": element.Name,
+                            "class": element.ClassName,
+                            "bounds": {
+                                "x": element.BoundingRectangle.left,
+                                "y": element.BoundingRectangle.top,
+                                "width": element.BoundingRectangle.width(),
+                                "height": element.BoundingRectangle.height(),
+                                "center_x": element.BoundingRectangle.left + element.BoundingRectangle.width() // 2,
+                                "center_y": element.BoundingRectangle.top + element.BoundingRectangle.height() // 2
+                            },
+                            "enabled": element.IsEnabled,
+                            "visible": element.IsEnabled  # Simplified visibility check
+                        }
+                        
+                        if hasattr(element, 'AutomationId') and element.AutomationId:
+                            element_info["automation_id"] = element.AutomationId
+                        
+                        # Try to get value if it's an input control
+                        try:
+                            value_pattern = element.GetValuePattern()
+                            if value_pattern:
+                                element_info["value"] = value_pattern.Value
+                        except:
+                            pass
+                        
+                        found_elements.append(element_info)
+                    
+                    # Search children
+                    for child in element.GetChildren():
+                        search_element(child, depth + 1)
+                except:
+                    pass
+            
+            search_element(root)
+            
+            return {
+                "status": "success",
+                "found": len(found_elements),
+                "elements": found_elements,
+                "message": f"Found {len(found_elements)} matching element(s)"
+            }
+        
+        except Exception as e:
+            log.error(f"UI element search error: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Failed to find UI element: {e}"}
 
 class AgentExecutor:
     def __init__(self):
